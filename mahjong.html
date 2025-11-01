@@ -1,0 +1,257 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2人麻雀</title>
+<style>
+body {
+  background-color:#2e8b57;
+  font-family:sans-serif;
+  text-align:center;
+  margin:0;
+  overflow:hidden;
+}
+.player-area {
+  display:flex; justify-content:flex-end;
+  flex-wrap:nowrap; padding:10px; margin:2px auto;
+  width:95%; border:3px solid transparent; border-radius:10px;
+  position:relative;
+}
+.active { border-color: yellow; }
+.tile {
+  width:40px; height:60px; background-color:white;
+  border:1px solid #333; margin:2px;
+  display:inline-flex; align-items:center; justify-content:center;
+  cursor:pointer; user-select:none; transition:opacity 0.2s;
+}
+.reverse { transform:rotate(180deg); }
+.tile[data-suit="m"]{ border-color:red; }
+.tile[data-suit="p"]{ border-color:blue; }
+.tile[data-suit="s"]{ border-color:green; }
+.tile[data-suit="honor"]{ border-color:black; }
+.transparent { opacity:0.3; pointer-events:none; }
+#log {
+  margin:20px 0; background-color:rgba(255,255,255,0.9);
+  padding:12px 24px; border-radius:10px;
+  min-width:300px; text-align:center; font-size:18px;
+}
+#A-area { flex-direction:row-reverse; margin-bottom:20px; }
+#B-area { margin-top:20px; flex-direction:row; }
+.discard { display:flex; justify-content:center; margin:4px 0; }
+.pon-btn, .cancel-btn {
+  margin-left:5px; padding:4px 8px; font-size:14px;
+  cursor:pointer; border-radius:6px;
+}
+.btn-box {
+  position:absolute; right:0; top:50%;
+  transform:translateY(-50%); display:flex; flex-direction:column;
+}
+/* 設定ボタン（常に左上に固定） */
+#settings {
+  position:fixed;
+  top:10px; left:10px;
+  font-size:22px;
+  background:none; border:none; cursor:pointer;
+  z-index:1000;
+}
+#reset-btn {
+  display:none;
+  position:fixed;
+  top:40px; left:10px;
+  background:#fff;
+  border:1px solid #333;
+  padding:6px 10px;
+  border-radius:6px;
+  cursor:pointer;
+  z-index:1000;
+}
+</style>
+</head>
+<body>
+<button id="settings">⚙️</button>
+<button id="reset-btn">リセット</button>
+<div id="A-area" class="player-area reverse"></div>
+<div id="A-discard" class="discard"></div>
+<div id="log"></div>
+<div id="B-discard" class="discard"></div>
+<div id="B-area" class="player-area"></div>
+<script>
+const suits=["m","p","s"];
+const honors=["E","S","W","N","H","F","C"];
+let wall=[];
+let hands={A:[],B:[]};
+let tsumo={A:null,B:null};
+let latestDiscard={A:null,B:null};
+let melds={A:[],B:[]};
+let turn="A";
+let waitingPon=false;
+let pendingPon={player:null,tile:null};
+let canceledTsumo=null;
+let gameEnd=false;
+function createWall(){
+  wall=[];
+  for(let s of suits){ for(let i=1;i<=9;i++){ for(let j=0;j<4;j++) wall.push(i+s); } }
+  for(let h of honors){ for(let j=0;j<4;j++) wall.push(h); }
+  shuffle(wall);
+}
+function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } }
+function sortHand(arr,player){
+  const honorOrder={H:1,F:2,C:3,E:4,S:5,W:6,N:7};
+  const suitOrder={s:1,p:2,m:3};
+  arr.sort((a,b)=>{
+    const as=a.slice(-1), bs=b.slice(-1);
+    const an=parseInt(a)||0, bn=parseInt(b)||0;
+    if(player==="A"){
+      const av=honors.includes(as)? honorOrder[as]: suitOrder[as]*10+(10-an);
+      const bv=honors.includes(bs)? honorOrder[bs]: suitOrder[bs]*10+(10-bn);
+      return av-bv;
+    }else{
+      const order={m:1,p:2,s:3,E:4,S:5,W:6,N:7,H:8,F:9,C:10};
+      if(order[as]!==order[bs]) return order[as]-order[bs];
+      return an-bn;
+    }
+  });
+}
+function tileLabel(t){
+  const map={m:'萬',p:'筒',s:'索',E:'東',S:'南',W:'西',N:'北',H:'白',F:'發',C:'中'};
+  return t.length===2? t[0]+map[t[1]]: map[t];
+}
+function draw(p){
+  if(gameEnd||waitingPon) return;
+  if(!tsumo[p]){
+    if(wall.length>0) tsumo[p]=wall.pop();
+    else{ gameEnd=true; document.getElementById("log").textContent="流局"; return; }
+  }
+  render();
+}
+function render(){
+  for(let p of ["A","B"]){
+    const area=document.getElementById(p+"-area");
+    area.innerHTML="";
+    area.classList.toggle("active",turn===p);
+    let tiles=[...hands[p]];
+    let showTsumo = !(waitingPon && p===pendingPon.player);
+    if(tsumo[p] && showTsumo){
+      (p==="A"?tiles.unshift(tsumo[p]):tiles.push(tsumo[p]));
+    }
+    tiles.forEach(t=>{
+      const d=document.createElement("div");
+      d.className="tile";
+      d.dataset.suit=suits.includes(t.slice(-1))?t.slice(-1):"honor";
+      d.textContent=tileLabel(t);
+      if(waitingPon && p===pendingPon.player && t===canceledTsumo){
+        d.classList.add("transparent");
+      }
+      d.onclick=()=>{ if(!waitingPon&&!gameEnd) discard(t,p); };
+      area.appendChild(d);
+    });
+    melds[p].forEach(m=>{
+      const mdiv=document.createElement("div");
+      mdiv.className="meld";
+      m.forEach(mt=>{
+        const td=document.createElement("div");
+        td.className="tile";
+        td.dataset.suit=suits.includes(mt.slice(-1))?mt.slice(-1):"honor";
+        td.textContent=tileLabel(mt);
+        mdiv.appendChild(td);
+      });
+      area.appendChild(mdiv);
+    });
+    const btnBox=document.createElement("div");
+    btnBox.className="btn-box";
+    area.appendChild(btnBox);
+  }
+  document.getElementById("A-discard").innerHTML="";
+  document.getElementById("B-discard").innerHTML="";
+  for(let p of ["A","B"]){
+    const disc=document.getElementById(p+"-discard");
+    if(latestDiscard[p]){
+      const d=document.createElement("div");
+      d.className="tile";
+      d.dataset.suit=suits.includes(latestDiscard[p].slice(-1))?latestDiscard[p].slice(-1):"honor";
+      d.textContent=tileLabel(latestDiscard[p]);
+      if(p==="A") d.classList.add("reverse");
+      disc.appendChild(d);
+    }
+  }
+  document.getElementById("log").textContent="残り牌："+wall.length;
+  if(!waitingPon){
+    for(let p of ["A","B"]){
+      const opp=(p==="A")?"B":"A";
+      if(latestDiscard[opp]){
+        const cnt=hands[p].filter(t=>t===latestDiscard[opp]).length;
+        if(cnt>=2){
+          waitingPon=true;
+          pendingPon={player:p,tile:latestDiscard[opp]};
+          const area=document.getElementById(p+"-area");
+          const btnBox=area.querySelector(".btn-box");
+          const btnPon=document.createElement("button");
+          const btnCancel=document.createElement("button");
+          btnPon.className="pon-btn"; btnPon.textContent="ポン";
+          btnCancel.className="cancel-btn"; btnCancel.textContent="キャンセル";
+          btnPon.onclick=()=>doPon();
+          btnCancel.onclick=()=>cancelPon();
+          btnBox.appendChild(btnPon);
+          btnBox.appendChild(btnCancel);
+          if(tsumo[p]){ canceledTsumo=tsumo[p]; tsumo[p]=null; }
+        }
+      }
+    }
+  }
+}
+function discard(t,p){
+  if(p!==turn||waitingPon) return;
+  if(tsumo[p]){ hands[p].push(tsumo[p]); tsumo[p]=null; }
+  const i=hands[p].indexOf(t);
+  if(i!==-1) hands[p].splice(i,1);
+  latestDiscard[p]=t;
+  sortHand(hands[p],p);
+  turn=(p==="A")?"B":"A";
+  draw(turn);
+}
+function doPon(){
+  const p=pendingPon.player, tile=pendingPon.tile;
+  const i1=hands[p].indexOf(tile), i2=hands[p].indexOf(tile,i1+1);
+  if(i1!==-1&&i2!==-1){
+    melds[p].push([tile,tile,tile]);
+    hands[p].splice(i2,1); hands[p].splice(i1,1);
+    latestDiscard[(p==="A")?"B":"A"]=null;
+    if(canceledTsumo){ wall.unshift(canceledTsumo); canceledTsumo=null; }
+    waitingPon=false; pendingPon={player:null,tile:null};
+    tsumo[p]=null;
+    turn=p;
+    render();
+  }
+}
+function cancelPon(){
+  const p=pendingPon.player;
+  waitingPon=false; pendingPon={player:null,tile:null};
+  const opp=(p==="A")?"B":"A";
+  if(canceledTsumo){ tsumo[p]=canceledTsumo; canceledTsumo=null; }
+  latestDiscard[opp]=null;
+  turn=p; draw(p);
+}
+function start(){
+  createWall();
+  for(let p of ["A","B"]){
+    hands[p]=wall.splice(0,13);
+    tsumo[p]=null; melds[p]=[]; latestDiscard[p]=null;
+    sortHand(hands[p],p);
+  }
+  turn="A"; gameEnd=false; draw(turn);
+}
+/* 設定ボタン操作 */
+document.getElementById("settings").onclick=()=>{
+  const r=document.getElementById("reset-btn");
+  r.style.display=(r.style.display==="block")?"none":"block";
+};
+document.getElementById("reset-btn").onclick=()=>{
+  start();
+  document.getElementById("reset-btn").style.display="none";
+};
+start();
+</script>
+</body>
+</html>
